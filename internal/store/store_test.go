@@ -42,6 +42,7 @@ func runStoreSuite(t *testing.T, open func(t *testing.T) store.Store) {
 		{"copies are independent", testCopies},
 		{"canceled context", testCanceledContext},
 		{"run at", testRunAt},
+		{"requeue running", testRequeueRunning},
 		{"concurrent claim", testConcurrentClaim},
 	}
 	for _, tt := range tests {
@@ -399,6 +400,42 @@ func testRunAt(t *testing.T, s store.Store) {
 	}
 	if got.ID != ready.ID {
 		t.Fatalf("claimed %s, want %s", got.ID, ready.ID)
+	}
+}
+
+func testRequeueRunning(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	first, err := s.Create(ctx, job.Job{Type: "email"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := s.Create(ctx, job.Job{Type: "email"}); err != nil {
+		t.Fatalf("create second: %v", err)
+	}
+	claimed, err := s.ClaimNext(ctx)
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if claimed.ID != first.ID || claimed.Attempts != 1 {
+		t.Fatalf("claimed %+v", claimed)
+	}
+	n, err := s.RequeueRunning(ctx)
+	if err != nil {
+		t.Fatalf("requeue: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("requeued %d, want 1", n)
+	}
+	got, err := s.Get(ctx, first.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.State != job.StatePending || got.Attempts != 1 {
+		t.Fatalf("requeued job = %+v", got)
+	}
+	again, err := s.RequeueRunning(ctx)
+	if err != nil || again != 0 {
+		t.Fatalf("second requeue = %d, %v", again, err)
 	}
 }
 

@@ -63,6 +63,11 @@ type Store interface {
 	// Cancel moves a pending or running job to cancelled.
 	// Cancelling a job that is already cancelled succeeds.
 	Cancel(ctx context.Context, id string) error
+
+	// RequeueRunning moves every running job back to pending and returns how
+	// many changed. A restart uses this so a crash does not leave a job
+	// claimed forever. Attempts is left as stored.
+	RequeueRunning(ctx context.Context) (int, error)
 }
 
 // Compile-time check that both implementations satisfy Store.

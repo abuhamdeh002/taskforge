@@ -291,6 +291,29 @@ WHERE id = ? AND state = ?`,
 	return nil
 }
 
+// RequeueRunning moves every running job back to pending in one UPDATE,
+// so a crash between processes cannot leave a job running.
+func (s *SQLite) RequeueRunning(ctx context.Context) (int, error) {
+	const op = "requeue running"
+	if err := ctxErr(op, ctx); err != nil {
+		return 0, err
+	}
+	now := time.Now().UTC().UnixNano()
+	res, err := s.db.ExecContext(ctx, `
+UPDATE jobs
+SET state = ?, run_at = ?, updated_at = ?
+WHERE state = ?`,
+		job.StatePending, now, now, job.StateRunning)
+	if err != nil {
+		return 0, fmt.Errorf("%s: %w", op, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("%s: %w", op, err)
+	}
+	return int(n), nil
+}
+
 // Cancel moves a pending or running job to cancelled.
 func (s *SQLite) Cancel(ctx context.Context, id string) error {
 	const op = "cancel job"

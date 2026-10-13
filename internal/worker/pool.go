@@ -88,8 +88,10 @@ type Pool struct {
 	base       time.Duration
 	maxDelay   time.Duration
 
-	mu       sync.RWMutex
-	handlers map[string]Handler
+	mu            sync.RWMutex
+	handlers      map[string]Handler
+	handlerParent context.Context
+	stopHandlers  context.CancelFunc
 }
 
 // New returns a pool with workers goroutines. The store must be safe for
@@ -101,24 +103,30 @@ func New(st store.Store, workers int, opts ...Option) (*Pool, error) {
 	if workers < 1 {
 		return nil, fmt.Errorf("new worker pool: worker count must be positive")
 	}
+	handlerParent, stopHandlers := context.WithCancel(context.Background())
 	p := &Pool{
-		store:      st,
-		workers:    workers,
-		jobTimeout: DefaultJobTimeout,
-		poll:       DefaultPollInterval,
-		base:       DefaultBaseDelay,
-		maxDelay:   DefaultMaxDelay,
-		handlers:   make(map[string]Handler),
+		store:         st,
+		workers:       workers,
+		jobTimeout:    DefaultJobTimeout,
+		poll:          DefaultPollInterval,
+		base:          DefaultBaseDelay,
+		maxDelay:      DefaultMaxDelay,
+		handlers:      make(map[string]Handler),
+		handlerParent: handlerParent,
+		stopHandlers:  stopHandlers,
 	}
 	for _, opt := range opts {
 		if opt == nil {
+			stopHandlers()
 			return nil, errors.New("new worker pool: nil option")
 		}
 		if err := opt(p); err != nil {
+			stopHandlers()
 			return nil, fmt.Errorf("new worker pool: %w", err)
 		}
 	}
 	if p.maxDelay > 0 && p.base > p.maxDelay {
+		stopHandlers()
 		return nil, fmt.Errorf("new worker pool: base delay exceeds max delay")
 	}
 	return p, nil
@@ -141,13 +149,20 @@ func (p *Pool) Register(jobType string, h Handler) error {
 	return nil
 }
 
+// StopHandlers cancels in-flight handler contexts. Run still waits until
+// those handlers return. Call it when a drain timeout expires.
+func (p *Pool) StopHandlers() {
+	p.stopHandlers()
+}
+
 // Run claims jobs until ctx is cancelled, then waits for the jobs already
 // in a handler to finish. Cancelling ctx does not cancel those handlers.
-// Each handler gets its own timeout context.
+// Each handler gets its own timeout, also cancelled by StopHandlers.
 func (p *Pool) Run(ctx context.Context) error {
 	if ctx == nil {
 		return errors.New("run worker pool: nil context")
 	}
+	defer p.stopHandlers()
 	var wg sync.WaitGroup
 	for range p.workers {
 		wg.Add(1)
@@ -202,7 +217,7 @@ func (p *Pool) dispatch(ctx context.Context, j job.Job) {
 		_ = p.settle(ctx, j, fmt.Errorf("%w: %q", errUnknownType, j.Type))
 		return
 	}
-	jobCtx, cancel := context.WithTimeout(context.Background(), p.jobTimeout)
+	jobCtx, cancel := context.WithTimeout(p.handlerParent, p.jobTimeout)
 	herr := call(jobCtx, h, j)
 	cancel()
 	_ = p.settle(ctx, j, herr)

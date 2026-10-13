@@ -175,6 +175,29 @@ func (m *Memory) Update(ctx context.Context, j job.Job) error {
 	return nil
 }
 
+// RequeueRunning moves every running job back to pending.
+func (m *Memory) RequeueRunning(ctx context.Context) (int, error) {
+	const op = "requeue running"
+	if err := ctxErr(op, ctx); err != nil {
+		return 0, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := time.Now().UTC()
+	n := 0
+	for id, e := range m.jobs {
+		if e.job.State != job.StateRunning {
+			continue
+		}
+		e.job.State = job.StatePending
+		e.job.RunAt = now
+		e.job.UpdatedAt = now
+		m.jobs[id] = e
+		n++
+	}
+	return n, nil
+}
+
 // Cancel moves a pending or running job to cancelled.
 func (m *Memory) Cancel(ctx context.Context, id string) error {
 	const op = "cancel job"
